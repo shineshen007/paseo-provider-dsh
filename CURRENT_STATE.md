@@ -24,6 +24,28 @@ current_goal: deliver a native Paseo provider plugin for DeepSeek Harness (paseo
 ## in_progress
 - (none)
 
+
+## fixed_after_user_field_test
+- Model selection was never pushed into DSH: `session.open.config.model` /
+  `thinkingOption` were echoed back but `session/selectModel` was never called, so the
+  composer showed the user's pick while the harness ran `agent-default-model`.
+  `applyInitialSelection()` now pushes model + effort + mode + permission preset on
+  open, and reports a notice instead of failing silently.
+- Every durable event was delivered twice: the bridge both listened on the
+  process-wide `session/event` and consumed the per-session `follow()` stream. The
+  `follow()` iterator is now carried forward explicitly (a `follow()` generator cannot
+  be re-iterated) and the global listener only feeds the tool-argument cache.
+- `publishConfig` now adopts the harness-persisted model selection, so a resumed
+  session shows the model DSH actually holds instead of a blank field.
+- `pnpm add file:` COPIES a package into a profile instead of linking it, so a rebuilt
+  bridge kept running the previously installed copy and fixes appeared to do nothing.
+  `scripts/sync-bridge.mjs` refreshes the installed copy; `install.sh` reinstalls it.
+- Regression guards: e2e `open-applies-selection` and a one-user-bubble assertion.
+
+## verified_dsh_side
+- Restoring the field-test session from DSH's persisted projection reports
+  `ninfer/qwen3.8-27b` at effort `xhigh`: the selection really reached the harness.
+
 ## verified_on_real_paseo_daemon
 - Paseo 0.13.0 daemon 实测：`plugin ls` → `running`；daemon 日志确认
   `"providers":[{"id":"dsh",...,"hasStatus":true}]`。

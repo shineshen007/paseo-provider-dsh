@@ -134,6 +134,10 @@ step "Installing the bridge package into the profile"
 # resolves the module name from package.json ("dsh-paseo-bridge"). Installing by
 # the `file:` spec with an explicit name keeps the node_modules entry and the
 # import in cordis.patch.yml identical.
+# pnpm copies a `file:` dependency into the profile rather than linking it, so a
+# rebuilt bridge would otherwise keep running the previously installed copy. Remove
+# the installed copy first, then reinstall, so the profile always matches the build.
+rm -rf "$PROFILE_DIR/node_modules/dsh-paseo-bridge"
 ( cd "$PROFILE_DIR" && DSH_HOME="$DSH_HOME_DIR" "$PNPM" add "dsh-paseo-bridge@file:$PLUGIN_ROOT/dsh-bridge" >/dev/null 2>&1 ) \
   || fail "pnpm add failed for $PLUGIN_ROOT/dsh-bridge"
 info "bridge installed"

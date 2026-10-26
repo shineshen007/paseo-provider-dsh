@@ -240,6 +240,80 @@ async function main() {
           120_000,
           "turn completed",
         );
+
+        // Regression guard: one prompt must produce exactly ONE user bubble.
+        // The bridge used to consume both the process-wide session/event listener
+        // and the follow stream, so every durable event was delivered twice and the
+        // user's message appeared twice in the Paseo timeline.
+        const userBubbles = events.filter(
+          (e) => e.type === "timeline.item" && e.item.type === "user_message",
+        );
+        assert.equal(
+          userBubbles.length,
+          1,
+          `expected exactly one user_message for one prompt, got ${userBubbles.length}`,
+        );
+
+        await connection.close();
+      });
+
+      await scenario("open-applies-selection", async () => {
+        // Regression guard: the model and effort Paseo opens a session with must be
+        // pushed into the harness, not merely echoed back. Without this the composer
+        // showed the user's pick while the harness kept running its default model.
+        const { connection, events } = await openProvider(isolated);
+        await connection.send({
+          type: "catalog",
+          requestId: "cat-sel",
+        });
+        const catalog = await waitEvent(events, (e) => e.type === "catalog", 60_000, "catalog");
+        // Pick the first model that advertises a non-default reasoning effort.
+        const candidate = catalog.catalog.models.find(
+          (model) => (model.thinkingOptions ?? []).length > 0,
+        );
+        assert.ok(candidate, "need a model with reasoning efforts for this scenario");
+        const effort = candidate.thinkingOptions[candidate.thinkingOptions.length - 1];
+
+        await connection.send({
+          type: "session.open",
+          requestId: "open-sel",
+          sessionId: "paseo-sid-sel",
+          history: "skip",
+          config: {
+            cwd: isolated.home,
+            env: {},
+            mcpServers: {},
+            settings: {},
+            persist: false,
+            model: candidate.id,
+            thinkingOption: effort.id,
+          },
+        });
+        await waitEvent(events, (e) => e.type === "session.ready", 120_000, "ready");
+
+        const config = await waitEvent(
+          events,
+          (e) => e.type === "session.config" && e.config.model !== undefined,
+          60_000,
+          "config with model",
+        );
+        assert.equal(
+          config.config.model,
+          candidate.id,
+          `harness reports ${String(config.config.model)} but ${candidate.id} was selected`,
+        );
+        assert.equal(
+          config.config.thinkingOption,
+          effort.id,
+          `harness reports effort ${String(config.config.thinkingOption)} but ${effort.id} was selected`,
+        );
+
+        // No warning notice means the harness accepted the selection.
+        const rejected = events.find(
+          (e) => e.type === "session.notice" && e.notice.severity === "warning",
+        );
+        assert.equal(rejected, undefined, `selection was rejected: ${JSON.stringify(rejected)}`);
+        process.stdout.write(`    applied ${candidate.id} @ ${effort.id}\n`);
         await connection.close();
       });
 

@@ -158,9 +158,16 @@ export class SessionSupervisor {
     const on = (name: string, handler: (...args: never[]) => void): (() => void) =>
       (ctx as unknown as { on(event: string, listener: (...args: never[]) => void): () => void }).on(name, handler);
 
+    // Durable events reach Paseo through the per-session `follow()` stream, which
+    // is the authoritative source: the opening snapshot establishes the cursor and
+    // every later frame continues from it. This process-wide listener must NOT
+    // forward the same events again - doing so delivered every user message and
+    // every assistant chunk twice, which is exactly the duplicated-prompt bug.
+    // It is kept only to feed the tool-argument cache that enriches approval cards,
+    // because approvals can arrive before the follow frame is parsed.
     offs.push(
       on("session/event", ((session: { id: DshSessionId }, event: DshSessionEvent) => {
-        this.forwardEvent(session.id, event, "");
+        this.rememberToolArguments(event);
       }) as never),
     );
 
@@ -800,7 +807,12 @@ export class SessionSupervisor {
     );
 
     // The first frame is the snapshot; everything after streams.
-    const first = await takeFirst(iterator);
+    // `follow()` is an async generator, so the iterator must be carried forward
+    // explicitly. Handing the generator itself to `for await` would restart it and
+    // replay the opening snapshot, delivering every durable event a second time.
+    const followIterator = iterator[Symbol.asyncIterator]();
+    const firstFrame = await followIterator.next();
+    const first = firstFrame.done === true ? undefined : firstFrame.value;
     const cursor = first?.type === "snapshot" ? first.cursor : 0;
     follow.cursor = cursor;
     const owned: OwnedSession = {
@@ -831,19 +843,24 @@ export class SessionSupervisor {
     }
 
     // Pump the rest of the stream in the background for this session's lifetime.
-    void this.pump(iterator, sessionId, followId, follow);
+    void this.pump(followIterator, sessionId, followId, follow);
     return owned;
   }
 
   /** Forward every later frame of a follow stream. */
   private async pump(
-    iterator: AsyncIterable<DshFollowFrame>,
+    iterator: AsyncIterator<DshFollowFrame>,
     sessionId: DshSessionId,
     followId: string,
     follow: FollowState,
   ): Promise<void> {
     try {
-      for await (const frame of iterator) {
+      // Consume the SAME iterator the snapshot came from: this never re-emits the
+      // opening snapshot and never skips a frame between snapshot and live tail.
+      for (;;) {
+        const next = await iterator.next();
+        if (next.done === true) break;
+        const frame = next.value;
         if (follow.controller.signal.aborted) break;
         switch (frame.type) {
           case "snapshot":
@@ -866,10 +883,35 @@ export class SessionSupervisor {
     }
   }
 
+  /**
+   * Cache the arguments of one `tool/call` so an approval prompt can show the
+   * user what is being approved even when the follow frame has not arrived yet.
+   */
+  private rememberToolArguments(event: DshSessionEvent): void {
+    if (event.type !== "tool/call" || !isRecord(event.data)) return;
+    const callId = event.data.callId;
+    if (typeof callId !== "string") return;
+    const args = event.data.arguments;
+    let parsed: Record<string, unknown> | undefined;
+    if (typeof args === "string") {
+      try {
+        const value: unknown = JSON.parse(args);
+        if (isRecord(value)) parsed = value;
+      } catch {
+        parsed = { raw: args };
+      }
+    }
+    if (parsed !== undefined) this.toolInputs.set(callId, parsed);
+  }
+
   /** Merge one durable event into the wire notification set. */
   private forwardEvent(sessionId: DshSessionId, event: DshSessionEvent, followId: string): void {
     const open = this.sessions.get(sessionId);
-    if (open !== undefined) open.follow.cursor = Math.max(open.follow.cursor, event.seq);
+    // Only forward events for sessions this bridge owns. A harness host may carry
+    // sessions created elsewhere (the desktop app, another Paseo workspace); those
+    // must never appear in this Paseo provider's timeline.
+    if (open === undefined) return;
+    open.follow.cursor = Math.max(open.follow.cursor, event.seq);
     const parentSessionId =
       open !== undefined && this.childParents.has(sessionId) ? this.childParents.get(sessionId) : undefined;
     this.options.notify("session/event", {
@@ -878,23 +920,6 @@ export class SessionSupervisor {
       ...(parentSessionId !== undefined ? { parentSessionId } : {}),
       event: toWireEvent(event),
     });
-    // Retain tool arguments so an approval prompt can show what is being approved.
-    if (event.type === "tool/call" && isRecord(event.data)) {
-      const callId = event.data.callId;
-      if (typeof callId === "string") {
-        const args = event.data.arguments;
-        let parsed: Record<string, unknown> | undefined;
-        if (typeof args === "string") {
-          try {
-            const value: unknown = JSON.parse(args);
-            if (isRecord(value)) parsed = value;
-          } catch {
-            parsed = { raw: args };
-          }
-        }
-        if (parsed !== undefined) this.toolInputs.set(callId, parsed);
-      }
-    }
     // Subagent lifecycle is mirrored from the durable catalogue events.
     if (event.type === "subagent/catalog" || event.type === "subagent/descriptor") {
       this.onSubagentEvent(sessionId, event);
@@ -1071,12 +1096,3 @@ export class SessionSupervisor {
   }
 }
 
-/** Read only the first item of an async iterable, leaving the rest to the pump. */
-async function takeFirst<T>(iterable: AsyncIterable<T>): Promise<T | undefined> {
-  const iterator = iterable[Symbol.asyncIterator]();
-  const first = await iterator.next();
-  if (first.done === true) return undefined;
-  // Splice the already-created iterator back so the caller can drain the rest.
-  (iterable as unknown as { [Symbol.asyncIterator](): AsyncIterator<T> })[Symbol.asyncIterator] = () => iterator;
-  return first.value;
-}

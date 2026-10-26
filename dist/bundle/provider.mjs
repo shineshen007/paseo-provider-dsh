@@ -1143,6 +1143,7 @@ async function handleOpen(input, context) {
       log(`history replay skipped: ${describeError(error).message}`);
     }
   }
+  await applyInitialSelection(session, context, input.config);
   await publishConfig(session, context, "config");
   try {
     const commands = await client.request("session/commands", { sessionId: dshSessionId });
@@ -1471,6 +1472,9 @@ async function publishConfig(session, context, reason) {
       client.request("session/permission", { sessionId: session.dshSessionId }).catch(() => void 0)
     ]);
     const providerModels = catalogFrom(models).models;
+    if (models.selected !== void 0 && session.config.model === void 0) {
+      applySelectionToConfig(session, models);
+    }
     const config = {
       ...session.config.model !== void 0 ? { model: session.config.model } : {},
       ...session.config.mode !== void 0 ? { mode: session.config.mode } : {},
@@ -1812,6 +1816,124 @@ async function handleConfigure(input, context) {
   await publishConfig(session, context, "configure");
   emit({ type: "request.completed", requestId: input.requestId });
 }
+async function applyInitialSelection(session, context, config) {
+  const { client, emit, log } = context;
+  if (typeof config.model === "string" && config.model.length > 0) {
+    const catalogue = await readCatalogue(client, session.dshSessionId).catch(() => void 0);
+    const resolved = splitModelId(
+      config.model,
+      catalogue === void 0 ? void 0 : {
+        modelIds: catalogue.modelIds,
+        providers: catalogue.providers,
+        effortsOf: catalogue.effortsOf
+      }
+    );
+    const effort = (typeof config.thinkingOption === "string" && config.thinkingOption.length > 0 ? splitModelId(
+      config.thinkingOption,
+      catalogue === void 0 ? void 0 : {
+        modelIds: catalogue.modelIds,
+        providers: catalogue.providers,
+        effortsOf: catalogue.effortsOf
+      }
+    )?.effort : void 0) ?? resolved?.effort;
+    if (resolved === void 0) {
+      log(`session.open carried an unusable model id: ${config.model}`);
+      emit({
+        type: "session.notice",
+        sessionId: session.id,
+        notice: {
+          id: `model-unparsed-${Date.now()}`,
+          severity: "warning",
+          title: "DeepSeek Harness did not apply the selected model",
+          description: `Unrecognized model id "${config.model}". The harness is using its configured default.`
+        }
+      });
+    } else {
+      try {
+        const selected = await client.request("session/selectModel", {
+          sessionId: session.dshSessionId,
+          provider: resolved.provider,
+          model: resolved.model,
+          ...effort !== void 0 ? { reasoningEffort: effort } : {}
+        });
+        session.config = {
+          ...session.config,
+          model: `${selected.provider}/${selected.model}`,
+          ...selected.reasoningEffort !== void 0 ? { thinkingOption: `${selected.provider}/${selected.model}/${selected.reasoningEffort}` } : {}
+        };
+        log(`applied model ${selected.provider}/${selected.model}${effort !== void 0 ? ` @${effort}` : ""}`);
+      } catch (error) {
+        const described = describeError(error);
+        log(`selectModel failed: ${described.message}`);
+        emit({
+          type: "session.notice",
+          sessionId: session.id,
+          notice: {
+            id: `model-not-applied-${Date.now()}`,
+            severity: "warning",
+            title: "DeepSeek Harness rejected the selected model or effort",
+            description: described.message
+          }
+        });
+        try {
+          const selected = await client.request("session/selectModel", {
+            sessionId: session.dshSessionId,
+            provider: resolved.provider,
+            model: resolved.model
+          });
+          session.config = { ...session.config, model: `${selected.provider}/${selected.model}` };
+        } catch {
+        }
+      }
+    }
+  }
+  if (typeof config.mode === "string" && config.mode.length > 0) {
+    const wantsPlan = config.mode === MODE_PLAN;
+    try {
+      const result = await client.request("session/setPlanMode", {
+        sessionId: session.dshSessionId,
+        active: wantsPlan
+      });
+      session.config = { ...session.config, mode: result.active ? MODE_PLAN : MODE_BUILD };
+    } catch (error) {
+      log(`initial plan mode switch failed: ${describeError(error).message}`);
+    }
+  }
+  const preset = config.settings[SETTING_PERMISSION];
+  if (typeof preset === "string" && preset.length > 0) {
+    try {
+      const applied = await client.request("session/setPermission", {
+        sessionId: session.dshSessionId,
+        name: preset
+      });
+      session.config = {
+        ...session.config,
+        settings: { ...session.config.settings, [SETTING_PERMISSION]: applied.applied }
+      };
+    } catch (error) {
+      log(`initial permission preset failed: ${describeError(error).message}`);
+    }
+  }
+}
+async function readCatalogue(client, sessionId) {
+  const models = await client.request(
+    "session/models",
+    sessionId !== void 0 ? { sessionId } : {},
+    6e4
+  );
+  return {
+    modelIds: models.groups.flatMap((group) => group.models.map((model) => `${group.id}/${model.id}`)),
+    providers: models.groups.map((group) => group.id),
+    effortsOf: (modelId) => {
+      const slash = modelId.indexOf("/");
+      const provider = modelId.slice(0, slash);
+      const model = modelId.slice(slash + 1);
+      const group = models.groups.find((candidate) => candidate.id === provider);
+      const found = group?.models.find((candidate) => candidate.id === model);
+      return (found?.reasoning?.efforts ?? []).map((effort) => effort.id);
+    }
+  };
+}
 function splitModelId(value, catalogue) {
   if (value.length === 0) return void 0;
   const trimmed = value.startsWith(`${PROVIDER_ID}/`) ? value.slice(PROVIDER_ID.length + 1) : value;
@@ -1850,6 +1972,7 @@ export {
   catalogFrom,
   createDshProvider,
   isOfficialDeepseek,
+  readCatalogue,
   splitModelId
 };
 //# sourceMappingURL=provider.mjs.map

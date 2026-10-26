@@ -886,6 +886,15 @@ async function handleOpen(
 
   // Publish the real config state: models, modes, thinking options and the
   // permission presets the host actually offers.
+  // Apply the user's actual selection to DSH BEFORE publishing config.
+  //
+  // Paseo sends its choice in `session.open.config`, but storing it in
+  // `session.config` and echoing it back is not the same as using it: without this
+  // call the harness keeps running `agent-default-model` while the Paseo composer
+  // shows the user's pick. That is the "selected qwen but got another model"
+  // symptom.
+  await applyInitialSelection(session, context, input.config);
+
   await publishConfig(session, context, "config");
 
   // Slash commands are real DSH commands, so Paseo can expose them verbatim.
@@ -1321,6 +1330,14 @@ async function publishConfig(
       client.request("session/permission", { sessionId: session.dshSessionId }).catch(() => undefined),
     ]);
     const providerModels = catalogFrom(models).models;
+    // Prefer the selection the harness actually holds. After a restore this is the
+    // only source of truth: `session.config` starts from what Paseo sent, which may
+    // be empty, while DSH persisted the model with the session log. Without this the
+    // Paseo composer showed no model for a resumed session even though the harness
+    // was running one.
+    if (models.selected !== undefined && session.config.model === undefined) {
+      applySelectionToConfig(session, models);
+    }
     const config: ProviderConfigState = {
       ...(session.config.model !== undefined ? { model: session.config.model } : {}),
       ...(session.config.mode !== undefined ? { mode: session.config.mode } : {}),
@@ -1772,6 +1789,183 @@ async function handleConfigure(
 
   await publishConfig(session, context, "configure");
   emit({ type: "request.completed", requestId: input.requestId });
+}
+
+/**
+ * Push the selection Paseo opened the session with into DSH.
+ *
+ * Four independent pieces of state can arrive on `session.open.config`, and each
+ * maps to a different native seam:
+ *
+ * - `model` (+ `thinkingOption`): one `session/selectModel` call, because DSH
+ *   installs provider, model and reasoning effort as a single durable selection.
+ * - `mode`: the plan/build switch, through the same command seam the config UI uses.
+ * - `settings["permission-preset"]`: the sandbox/approval preset.
+ *
+ * Every failure is reported as a notice instead of being swallowed: a silent
+ * failure here reproduces exactly the bug this function exists to fix.
+ */
+async function applyInitialSelection(
+  session: PaseoSession,
+  context: {
+    client: BridgeClient;
+    state: ConnectionState;
+    emit: (event: ProviderEvent) => void;
+    log(message: string): void;
+  },
+  config: ProviderSessionConfig,
+): Promise<void> {
+  const { client, emit, log } = context;
+
+  // --- model + reasoning effort -------------------------------------------
+  if (typeof config.model === "string" && config.model.length > 0) {
+    const catalogue = await readCatalogue(client, session.dshSessionId).catch(() => undefined);
+    const resolved = splitModelId(
+      config.model,
+      catalogue === undefined
+        ? undefined
+        : {
+            modelIds: catalogue.modelIds,
+            providers: catalogue.providers,
+            effortsOf: catalogue.effortsOf,
+          },
+    );
+    // The effort arrives as its own Paseo id ("provider/model/effort"); fall back
+    // to a trailing effort on the model id when the dedicated field is absent.
+    const effort =
+      (typeof config.thinkingOption === "string" && config.thinkingOption.length > 0
+        ? splitModelId(
+            config.thinkingOption,
+            catalogue === undefined
+              ? undefined
+              : {
+                  modelIds: catalogue.modelIds,
+                  providers: catalogue.providers,
+                  effortsOf: catalogue.effortsOf,
+                },
+          )?.effort
+        : undefined) ?? resolved?.effort;
+
+    if (resolved === undefined) {
+      log(`session.open carried an unusable model id: ${config.model}`);
+      emit({
+        type: "session.notice",
+        sessionId: session.id,
+        notice: {
+          id: `model-unparsed-${Date.now()}`,
+          severity: "warning",
+          title: "DeepSeek Harness did not apply the selected model",
+          description: `Unrecognized model id "${config.model}". The harness is using its configured default.`,
+        },
+      });
+    } else {
+      try {
+        const selected = await client.request("session/selectModel", {
+          sessionId: session.dshSessionId,
+          provider: resolved.provider,
+          model: resolved.model,
+          ...(effort !== undefined ? { reasoningEffort: effort } : {}),
+        });
+        session.config = {
+          ...session.config,
+          model: `${selected.provider}/${selected.model}`,
+          ...(selected.reasoningEffort !== undefined
+            ? { thinkingOption: `${selected.provider}/${selected.model}/${selected.reasoningEffort}` }
+            : {}),
+        };
+        log(`applied model ${selected.provider}/${selected.model}${effort !== undefined ? ` @${effort}` : ""}`);
+      } catch (error) {
+        // A rejected effort must not silently become a different effort: retry once
+        // without it and tell the user what actually happened.
+        const described = describeError(error);
+        log(`selectModel failed: ${described.message}`);
+        emit({
+          type: "session.notice",
+          sessionId: session.id,
+          notice: {
+            id: `model-not-applied-${Date.now()}`,
+            severity: "warning",
+            title: "DeepSeek Harness rejected the selected model or effort",
+            description: described.message,
+          },
+        });
+        try {
+          const selected = await client.request("session/selectModel", {
+            sessionId: session.dshSessionId,
+            provider: resolved.provider,
+            model: resolved.model,
+          });
+          session.config = { ...session.config, model: `${selected.provider}/${selected.model}` };
+        } catch {
+          // Leave the harness default in place; the notice above already said so.
+        }
+      }
+    }
+  }
+
+  // --- plan / build mode ---------------------------------------------------
+  if (typeof config.mode === "string" && config.mode.length > 0) {
+    const wantsPlan = config.mode === MODE_PLAN;
+    try {
+      const result = await client.request("session/setPlanMode", {
+        sessionId: session.dshSessionId,
+        active: wantsPlan,
+      });
+      session.config = { ...session.config, mode: result.active ? MODE_PLAN : MODE_BUILD };
+    } catch (error) {
+      log(`initial plan mode switch failed: ${describeError(error).message}`);
+    }
+  }
+
+  // --- permission preset ---------------------------------------------------
+  const preset = config.settings[SETTING_PERMISSION];
+  if (typeof preset === "string" && preset.length > 0) {
+    try {
+      const applied = await client.request("session/setPermission", {
+        sessionId: session.dshSessionId,
+        name: preset,
+      });
+      session.config = {
+        ...session.config,
+        settings: { ...session.config.settings, [SETTING_PERMISSION]: applied.applied },
+      };
+    } catch (error) {
+      log(`initial permission preset failed: ${describeError(error).message}`);
+    }
+  }
+}
+
+/**
+ * Read the live model catalogue and index it for id resolution.
+ *
+ * Shared by the open path and `session.configure`: both must resolve a Paseo model
+ * id against real harness ids, because those ids legitimately contain slashes.
+ */
+export async function readCatalogue(
+  client: BridgeClient,
+  sessionId?: string,
+): Promise<{
+  modelIds: string[];
+  providers: string[];
+  effortsOf: (modelId: string) => readonly string[];
+}> {
+  const models = await client.request(
+    "session/models",
+    sessionId !== undefined ? { sessionId } : {},
+    60_000,
+  );
+  return {
+    modelIds: models.groups.flatMap((group) => group.models.map((model) => `${group.id}/${model.id}`)),
+    providers: models.groups.map((group) => group.id),
+    effortsOf: (modelId: string): readonly string[] => {
+      const slash = modelId.indexOf("/");
+      const provider = modelId.slice(0, slash);
+      const model = modelId.slice(slash + 1);
+      const group = models.groups.find((candidate) => candidate.id === provider);
+      const found = group?.models.find((candidate) => candidate.id === model);
+      return (found?.reasoning?.efforts ?? []).map((effort) => effort.id);
+    },
+  };
 }
 
 /**

@@ -341,7 +341,7 @@ var SessionSupervisor = class {
     const on = (name2, handler) => ctx.on(name2, handler);
     offs.push(
       on("session/event", (session, event) => {
-        this.forwardEvent(session.id, event, "");
+        this.rememberToolArguments(event);
       })
     );
     offs.push(
@@ -842,7 +842,9 @@ var SessionSupervisor = class {
       },
       controller.signal
     );
-    const first = await takeFirst(iterator);
+    const followIterator = iterator[Symbol.asyncIterator]();
+    const firstFrame = await followIterator.next();
+    const first = firstFrame.done === true ? void 0 : firstFrame.value;
     const cursor = first?.type === "snapshot" ? first.cursor : 0;
     follow.cursor = cursor;
     const owned = {
@@ -870,13 +872,16 @@ var SessionSupervisor = class {
         });
       }
     }
-    void this.pump(iterator, sessionId, followId, follow);
+    void this.pump(followIterator, sessionId, followId, follow);
     return owned;
   }
   /** Forward every later frame of a follow stream. */
   async pump(iterator, sessionId, followId, follow) {
     try {
-      for await (const frame of iterator) {
+      for (; ; ) {
+        const next = await iterator.next();
+        if (next.done === true) break;
+        const frame = next.value;
         if (follow.controller.signal.aborted) break;
         switch (frame.type) {
           case "snapshot":
@@ -897,10 +902,31 @@ var SessionSupervisor = class {
     } catch {
     }
   }
+  /**
+   * Cache the arguments of one `tool/call` so an approval prompt can show the
+   * user what is being approved even when the follow frame has not arrived yet.
+   */
+  rememberToolArguments(event) {
+    if (event.type !== "tool/call" || !isRecord(event.data)) return;
+    const callId = event.data.callId;
+    if (typeof callId !== "string") return;
+    const args = event.data.arguments;
+    let parsed;
+    if (typeof args === "string") {
+      try {
+        const value = JSON.parse(args);
+        if (isRecord(value)) parsed = value;
+      } catch {
+        parsed = { raw: args };
+      }
+    }
+    if (parsed !== void 0) this.toolInputs.set(callId, parsed);
+  }
   /** Merge one durable event into the wire notification set. */
   forwardEvent(sessionId, event, followId) {
     const open = this.sessions.get(sessionId);
-    if (open !== void 0) open.follow.cursor = Math.max(open.follow.cursor, event.seq);
+    if (open === void 0) return;
+    open.follow.cursor = Math.max(open.follow.cursor, event.seq);
     const parentSessionId = open !== void 0 && this.childParents.has(sessionId) ? this.childParents.get(sessionId) : void 0;
     this.options.notify("session/event", {
       sessionId,
@@ -908,22 +934,6 @@ var SessionSupervisor = class {
       ...parentSessionId !== void 0 ? { parentSessionId } : {},
       event: toWireEvent(event)
     });
-    if (event.type === "tool/call" && isRecord(event.data)) {
-      const callId = event.data.callId;
-      if (typeof callId === "string") {
-        const args = event.data.arguments;
-        let parsed;
-        if (typeof args === "string") {
-          try {
-            const value = JSON.parse(args);
-            if (isRecord(value)) parsed = value;
-          } catch {
-            parsed = { raw: args };
-          }
-        }
-        if (parsed !== void 0) this.toolInputs.set(callId, parsed);
-      }
-    }
     if (event.type === "subagent/catalog" || event.type === "subagent/descriptor") {
       this.onSubagentEvent(sessionId, event);
     }
@@ -1052,13 +1062,6 @@ var SessionSupervisor = class {
     });
   }
 };
-async function takeFirst(iterable) {
-  const iterator = iterable[Symbol.asyncIterator]();
-  const first = await iterator.next();
-  if (first.done === true) return void 0;
-  iterable[Symbol.asyncIterator] = () => iterator;
-  return first.value;
-}
 
 // dsh-bridge/src/wire.ts
 var BRIDGE_WIRE_VERSION = 1;
