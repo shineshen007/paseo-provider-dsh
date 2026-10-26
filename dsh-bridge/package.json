@@ -1,0 +1,24 @@
+{
+  "name": "dsh-paseo-bridge",
+  "version": "0.1.0",
+  "description": "DSH-side bridge plugin exposing DeepSeek Harness native services (sessions, models, plan, approvals, questions, subagents) to the Paseo provider plugin over a private JSON-RPC channel.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib/index.js", "cordis.patch.yml", "package.json"],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

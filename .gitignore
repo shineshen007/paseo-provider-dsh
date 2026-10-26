@@ -1,0 +1,11 @@
+node_modules/
+.npm-cache/
+*.log
+# Build outputs are produced by scripts/build.mjs and are required at install time
+# for the bridge (a DSH profile resolves it from node_modules), so dist/ and
+# dsh-bridge/lib/ are intentionally NOT ignored.
+.DS_Store
+**/.DS_Store
+*.swp
+.idea/
+.vscode/

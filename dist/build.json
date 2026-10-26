@@ -1,0 +1,7 @@
+{
+  "plugin": "paseo-provider-dsh",
+  "version": "0.1.0",
+  "bridgeVersion": "0.1.0",
+  "entry": "dist/index.server.js",
+  "bridgeEntry": "dsh-bridge/lib/index.js"
+}

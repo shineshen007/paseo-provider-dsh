@@ -1,0 +1,16 @@
+# Bundle patch for dsh-paseo-bridge.
+#
+# A DSH bundle patch is a top-level YAML array of loader patch entries. A bare
+# `- id: <new>` entry is an *override*: it can only reconfigure an entry the
+# composed tree already has, and the loader rejects an unknown id with
+# `patch: entry "<id>" not found`. A brand-new entry therefore has to be added
+# through an `insert:` list, which is what this file does.
+#
+# The channel is inert until the Paseo provider starts this host with
+# `--paseo-bridge`, so a profile that merely carries the bundle costs nothing at
+# boot and never competes with the user's own running harness.
+- insert:
+    - id: paseo-bridge
+      name: dsh-paseo-bridge
+      config:
+        enabled: true

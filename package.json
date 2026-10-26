@@ -1,0 +1,62 @@
+{
+  "name": "paseo-provider-dsh",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Native Paseo provider plugin that drives DeepSeek Harness (DSH) directly, without ACP.",
+  "license": "MIT",
+  "author": "Xia Shen",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shineshen007/paseo-provider-dsh.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shineshen007/paseo-provider-dsh/issues"
+  },
+  "homepage": "https://github.com/shineshen007/paseo-provider-dsh#readme",
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "paseo-provider",
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "agent",
+    "coding-agent"
+  ],
+  "workspaces": ["dsh-bridge"],
+  "files": [
+    "paseo-plugin.json",
+    "index.server.ts",
+    "icon.svg",
+    "OVERVIEW.md",
+    "README.md",
+    "LICENSE",
+    "shared/",
+    "server/",
+    "dsh-bridge/",
+    "scripts/",
+    "docs/"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "node scripts/e2e/run.mjs",
+    "doctor": "node scripts/doctor.mjs"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@getpaseo/plugin": "0.13.1",
+    "@getpaseo/protocol": "0.13.1",
+    "@types/node": "^22.10.2",
+    "esbuild": "^0.24.2",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.8",
+    "zod": "^4.4.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,6 @@
+# The repo carries two independently installable packages: the Paseo plugin at
+# the root and the DSH-side bridge in dsh-bridge/. pnpm needs this file because it
+# ignores package.json `workspaces`.
+packages:
+  - "."
+  - "dsh-bridge"

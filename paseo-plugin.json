@@ -1,0 +1,9 @@
+{
+  "id": "paseo-provider-dsh",
+  "name": "DeepSeek Harness",
+  "description": "Native DeepSeek Harness (dsh) provider: plan mode, model and reasoning-effort switching, sandbox permissions, tool approvals, interactive questions, sub-agents and resumable native sessions.",
+  "requirements": {
+    "paseo": ">=0.13.0 <0.14.0"
+  },
+  "build": [["node", "scripts/build.mjs"]]
+}
