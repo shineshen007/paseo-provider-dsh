@@ -53,6 +53,58 @@ describe("durable event mapping", () => {
     expect(items[0]).toMatchObject({ type: "user_message", text: "hello" });
   });
 
+  it("carries the ids Paseo needs to merge its optimistic bubble", () => {
+    // Without clientMessageId the daemon cannot match this echo against the bubble
+    // it painted on send, so both render - the duplicated prompt bug.
+    const items = timelineItemsFor(
+      SESSION,
+      event("user/message", {
+        id: "msg_abc",
+        content: [{ type: "text", text: "hello" }],
+        source: { kind: "user-rpc", rpcId: "client-msg-1" },
+      }),
+    );
+    expect(items[0]).toMatchObject({
+      type: "user_message",
+      text: "hello",
+      clientMessageId: "client-msg-1",
+      messageId: "msg_abc",
+    });
+  });
+
+  it("reads rpcId even when the source kind is normalized to user", () => {
+    // A real observed event carries source {"kind":"user","rpcId":"…"}: the kind is
+    // normalized while the correlation id survives, so the mapping must not gate on
+    // kind alone.
+    const items = timelineItemsFor(
+      SESSION,
+      event("user/message", {
+        content: [{ type: "text", text: "normalized" }],
+        source: { kind: "user", rpcId: "client-msg-2" },
+      }),
+    );
+    expect(items[0]).toMatchObject({ type: "user_message", clientMessageId: "client-msg-2" });
+  });
+
+  it("omits clientMessageId when the source carries no rpcId", () => {
+    // A prompt issued by the harness's own UI has no rpcId to correlate with, so no
+    // field is invented; the bubble still renders once.
+    const items = timelineItemsFor(
+      SESSION,
+      event("user/message", { content: [{ type: "text", text: "from dsh ui" }], source: { kind: "user" } }),
+    );
+    expect(items[0]).toMatchObject({ type: "user_message", text: "from dsh ui" });
+    expect(items[0]).not.toHaveProperty("clientMessageId");
+  });
+
+  it("never writes an empty clientMessageId", () => {
+    const items = timelineItemsFor(
+      SESSION,
+      event("user/message", { content: [{ type: "text", text: "x" }], source: { kind: "user-rpc", rpcId: "" } }),
+    );
+    expect(items[0]).not.toHaveProperty("clientMessageId");
+  });
+
   it("does not surface injected runtime context as a user bubble", () => {
     // DSH injects system/reminder context as user-role messages; showing them as
     // human prompts would misrepresent the conversation.

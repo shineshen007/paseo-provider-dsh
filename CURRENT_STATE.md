@@ -25,6 +25,26 @@ current_goal: deliver a native Paseo provider plugin for DeepSeek Harness (paseo
 - (none)
 
 
+
+## fixed_duplicate-user-bubble
+- Symptom: two identical user bubbles in the Paseo UI for one send, while
+  `paseo logs` showed one `[User]` line - so the duplicate was UI-level, not a
+  provider double-emit (that was the earlier fixed_after_user_field_test defect).
+- Cause: the daemon paints an optimistic bubble on send and, on turn acceptance,
+  drops the staged echo whose `item.clientMessageId` matches the prompt. Our
+  `user_message` timeline item omitted that field, so the lookup missed and both
+  bubbles rendered.
+- Fix: map DSH `source.rpcId` to `clientMessageId` and DSH `data.id` to
+  `messageId`. Observed shape is `{"kind":"user","rpcId":"…"}` - the kind is
+  normalized while the correlation id survives, so it must not be gated on
+  `kind === "user-rpc"`.
+- Also: `onSessionEvent` now skips events at or below a render watermark
+  (`appliedSeq`, initialised to -1 because DSH's first sequence is 0), and history
+  replay shares that watermark, making page/follow overlap order-independent.
+- Also: replay no longer cuts at `persistence.lastSeq`. That watermark is captured
+  at session open, before any turn exists, so it truncated replay to nothing.
+  `session/page` now omits `throughSeq` and the bridge clamps to its live cursor.
+
 ## fixed_after_user_field_test
 - Model selection was never pushed into DSH: `session.open.config.model` /
   `thinkingOption` were echoed back but `session/selectModel` was never called, so the

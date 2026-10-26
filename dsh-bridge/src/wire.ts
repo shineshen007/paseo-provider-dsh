@@ -339,8 +339,13 @@ export interface SessionProjectionsResult {
 
 export interface SessionPageParams {
   readonly sessionId: DshSessionId;
-  /** Inclusive log cut; the follow snapshot's cursor is the usual source. */
-  readonly throughSeq: number;
+  /**
+   * Inclusive log cut. Omitted means "everything this bridge currently holds",
+   * which the bridge resolves to its live follow cursor. That is the only correct
+   * cut for a resumed session: a watermark persisted at open time predates every
+   * turn and would truncate the replay.
+   */
+  readonly throughSeq?: number;
   readonly beforeSeq?: number;
   readonly maxMessages?: number;
 }

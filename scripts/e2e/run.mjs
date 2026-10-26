@@ -253,6 +253,13 @@ async function main() {
           1,
           `expected exactly one user_message for one prompt, got ${userBubbles.length}`,
         );
+        // The echo must carry the clientMessageId the prompt was sent with, so the
+        // daemon can retire the optimistic bubble instead of drawing both.
+        assert.equal(
+          userBubbles[0].item.clientMessageId,
+          "msg-1",
+          `user_message carries clientMessageId ${String(userBubbles[0].item.clientMessageId)}, expected msg-1`,
+        );
 
         await connection.close();
       });
@@ -315,6 +322,68 @@ async function main() {
         assert.equal(rejected, undefined, `selection was rejected: ${JSON.stringify(rejected)}`);
         process.stdout.write(`    applied ${candidate.id} @ ${effort.id}\n`);
         await connection.close();
+      });
+
+      await scenario("reopen-history", async () => {
+        // Writes one turn, closes the provider, then reopens the same DSH session
+        // with history replay. Replay and the live stream must not each render the
+        // same message.
+        const first = await openProvider(isolated);
+        await first.connection.send({
+          type: "session.open",
+          requestId: "hist-open-1",
+          sessionId: "paseo-sid-hist",
+          history: "skip",
+          config: { cwd: isolated.home, env: {}, mcpServers: {}, settings: {}, persist: true },
+        });
+        await waitEvent(first.events, (e) => e.type === "session.ready", 120_000, "ready");
+        await first.connection.send({
+          type: "session.prompt",
+          sessionId: "paseo-sid-hist",
+          prompt: {
+            clientMessageId: "hist-msg-1",
+            delivery: "auto",
+            input: { type: "message", content: [{ type: "text", text: "history marker" }] },
+          },
+        });
+        await waitEvent(
+          first.events,
+          (e) => e.type === "session.turn" && e.state === "completed",
+          120_000,
+          "turn completed",
+        );
+        const opened = first.events.find((e) => e.type === "session.opened");
+        const persistence = opened.persistence;
+        await first.connection.close();
+
+        const second = await openProvider(isolated);
+        await second.connection.send({
+          type: "session.open",
+          requestId: "hist-open-2",
+          sessionId: "paseo-sid-hist-reopen",
+          history: "replay",
+          persistence,
+          config: { cwd: isolated.home, env: {}, mcpServers: {}, settings: {}, persist: true },
+        });
+        await waitEvent(second.events, (e) => e.type === "session.ready", 120_000, "reopened ready");
+        // Give the replay a moment to settle before counting.
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+
+        const replayed = second.events.filter(
+          (e) => e.type === "timeline.item" && e.item.type === "user_message" && e.item.text === "history marker",
+        );
+        assert.equal(
+          replayed.length,
+          1,
+          `history replay rendered the user message ${replayed.length} times, expected 1`,
+        );
+        assert.equal(
+          replayed[0].item.clientMessageId,
+          "hist-msg-1",
+          "replayed user_message lost its clientMessageId",
+        );
+        process.stdout.write(`    replayed once; persisted ${String(persistence.data.dshSessionId)}\n`);
+        await second.connection.close();
       });
 
       await scenario("plan-mode", async () => {

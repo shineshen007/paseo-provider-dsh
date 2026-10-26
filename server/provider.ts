@@ -137,6 +137,13 @@ class PaseoSession {
   turnCount = 0;
   /** Last durable DSH sequence number observed, for reconnect recovery. */
   lastSeq = 0;
+  /**
+   * Highest sequence already rendered into the timeline, or -1 before the first
+   * event. Kept separately from {@link lastSeq} because DSH's first event has
+   * sequence 0: a 0-based watermark would drop it, while the persistence record
+   * needs a real sequence number rather than a sentinel.
+   */
+  appliedSeq = -1;
   /** Child sessions spawned by this session, keyed by DSH child id. */
   readonly children = new Map<string, { toolCallId?: string; label?: string }>();
   /** Detach handlers registered for this session. */
@@ -865,19 +872,24 @@ async function handleOpen(
   // Replay history through the official page surface (never by parsing logs).
   if (input.history === "replay" && persisted !== undefined) {
     try {
-      // `page` needs a durable cut; the session's persisted watermark is the
-      // highest sequence the DSH log had when it was last saved, which is what a
-      // restore should replay up to.
+      // No explicit cut: the bridge clamps the page to its live follow cursor,
+      // which is what "the history this host actually has" means. The persisted
+      // watermark is NOT used as the cut - it is captured when the session opens,
+      // before any turn exists, so replaying up to it would return nothing.
       const page = await client.request("session/page", {
         sessionId: dshSessionId,
-        throughSeq: persisted.lastSeq ?? Number.MAX_SAFE_INTEGER,
         maxMessages: 60,
       });
       for (const event of page.records) {
+        // The follow snapshot may have rendered some of these already, depending on
+        // whether it arrived before or after this session's listeners were wired.
+        // Skipping at or below the render watermark makes the outcome order-independent.
+        if (event.seq <= session.appliedSeq) continue;
         for (const item of timelineItemsFor(dshSessionId, event)) {
           emit({ type: "timeline.item", sessionId: session.id, item });
         }
         session.lastSeq = Math.max(session.lastSeq, event.seq);
+        session.appliedSeq = event.seq;
       }
     } catch (error) {
       log(`history replay skipped: ${describeError(error).message}`);
@@ -1207,6 +1219,17 @@ function onSessionEvent(
   },
 ): void {
   const { emit } = context;
+
+  // Suppress an event the timeline already applied.
+  //
+  // History replay (`session/page`) and the live stream (`follow`) can overlap at a
+  // reconnect boundary, and a resumed session may replay a cut the live stream has
+  // already delivered. DSH sequence numbers are monotonic per session, so an event
+  // at or below the applied watermark was already rendered. This must run BEFORE
+  // the watermark advances below.
+  if (event.seq <= session.appliedSeq) return;
+  session.appliedSeq = event.seq;
+
   session.lastSeq = Math.max(session.lastSeq, event.seq);
 
   // Turn boundaries drive Paseo's turn lifecycle.

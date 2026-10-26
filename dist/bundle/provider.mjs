@@ -523,7 +523,17 @@ function timelineItemsFor(sessionId, event) {
       const kind = str(source?.kind);
       if (kind !== void 0 && kind !== "user" && kind !== "user-rpc") return [];
       if (text.length === 0) return [];
-      return [{ type: "user_message", id: `dsh:${sessionId}:user:${event.seq}`, text }];
+      const clientMessageId = str(source?.rpcId);
+      const messageId = str(data.id);
+      return [
+        {
+          type: "user_message",
+          id: `dsh:${sessionId}:user:${event.seq}`,
+          text,
+          ...messageId !== void 0 ? { messageId } : {},
+          ...clientMessageId !== void 0 ? { clientMessageId } : {}
+        }
+      ];
     }
     case "assistant/message": {
       const text = textOf(data.content);
@@ -665,6 +675,13 @@ var PaseoSession = class {
   turnCount = 0;
   /** Last durable DSH sequence number observed, for reconnect recovery. */
   lastSeq = 0;
+  /**
+   * Highest sequence already rendered into the timeline, or -1 before the first
+   * event. Kept separately from {@link lastSeq} because DSH's first event has
+   * sequence 0: a 0-based watermark would drop it, while the persistence record
+   * needs a real sequence number rather than a sentinel.
+   */
+  appliedSeq = -1;
   /** Child sessions spawned by this session, keyed by DSH child id. */
   children = /* @__PURE__ */ new Map();
   /** Detach handlers registered for this session. */
@@ -1130,14 +1147,15 @@ async function handleOpen(input, context) {
     try {
       const page = await client.request("session/page", {
         sessionId: dshSessionId,
-        throughSeq: persisted.lastSeq ?? Number.MAX_SAFE_INTEGER,
         maxMessages: 60
       });
       for (const event of page.records) {
+        if (event.seq <= session.appliedSeq) continue;
         for (const item of timelineItemsFor(dshSessionId, event)) {
           emit({ type: "timeline.item", sessionId: session.id, item });
         }
         session.lastSeq = Math.max(session.lastSeq, event.seq);
+        session.appliedSeq = event.seq;
       }
     } catch (error) {
       log(`history replay skipped: ${describeError(error).message}`);
@@ -1376,6 +1394,8 @@ function openChildSession(parent, params, context) {
 }
 function onSessionEvent(session, event, context) {
   const { emit } = context;
+  if (event.seq <= session.appliedSeq) return;
+  session.appliedSeq = event.seq;
   session.lastSeq = Math.max(session.lastSeq, event.seq);
   if (event.type === "turn/start") {
     if (session.activeTurnId === null) {

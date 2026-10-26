@@ -254,7 +254,34 @@ export function timelineItemsFor(sessionId: string, event: SessionWireEvent): Pr
       const kind = str(source?.kind);
       if (kind !== undefined && kind !== "user" && kind !== "user-rpc") return [];
       if (text.length === 0) return [];
-      return [{ type: "user_message", id: `dsh:${sessionId}:user:${event.seq}`, text }];
+
+      // Carry the two correlation ids Paseo needs.
+      //
+      // `clientMessageId` is what lets the daemon reconcile this echo with the
+      // optimistic bubble it already painted when the user hit send: on turn
+      // acceptance it looks for a staged user_message whose clientMessageId matches
+      // the submitted prompt and drops it. Without the field the lookup misses and
+      // BOTH bubbles render - the duplicated prompt the user reported.
+      //
+      // DSH records the prompt's `requestId` as `source.rpcId`, and that requestId is
+      // exactly the clientMessageId we sent with the prompt. The type declares this
+      // on the `user-rpc` source variant, but an observed event normalizes `kind` to
+      // `"user"` while keeping `rpcId`, so the field is read whenever it is present
+      // rather than gated on the kind.
+      //
+      // `messageId` is DSH's own durable message id, kept so a timeline entry can be
+      // traced back to the harness log.
+      const clientMessageId = str(source?.rpcId);
+      const messageId = str(data.id);
+      return [
+        {
+          type: "user_message",
+          id: `dsh:${sessionId}:user:${event.seq}`,
+          text,
+          ...(messageId !== undefined ? { messageId } : {}),
+          ...(clientMessageId !== undefined ? { clientMessageId } : {}),
+        },
+      ];
     }
     case "assistant/message": {
       const text = textOf(data.content);

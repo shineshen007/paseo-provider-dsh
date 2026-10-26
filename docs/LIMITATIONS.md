@@ -25,6 +25,14 @@ worked: the provider refuses or degrades explicitly rather than showing fabricat
 | **`session.revert` conversation scope** | Implemented as a DSH fork; Paseo shows a notice with the new session id, but does not automatically switch the open conversation to the fork |
 | **Usage / cost** | `session.usage` is not emitted: the DSH token meter was not wired to Paseo's usage event in this pass. The projection `tokenUsage` is present in the host and is the intended source |
 
+## Correlation and replay
+
+| Item | Detail |
+|---|---|
+| **Optimistic bubble merge** | The Paseo UI merges its optimistic user bubble with the provider echo only when the echo carries `clientMessageId`. This provider derives it from DSH's `source.rpcId`. A prompt that reaches DSH without an `rpcId` (for example one issued from the harness's own UI) renders once, but cannot be merged with a Paseo-side bubble - which is correct, because no such bubble exists |
+| **Replay cut** | History replay re-reads everything the bridge currently holds rather than cutting at the persisted watermark. The persisted `lastSeq` is written when a session opens, before any turn exists, so using it as a cut returned an empty replay |
+| **Replay vs live overlap** | Both share a render watermark (per-session DSH sequence number), so a replayed event is never rendered again by the live stream regardless of arrival order |
+
 ## Operational limits
 
 | Limit | Detail |
