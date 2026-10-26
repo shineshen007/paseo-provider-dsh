@@ -4,6 +4,8 @@ updated_at: 2026-10-26
 current_goal: deliver a native Paseo provider plugin for DeepSeek Harness (paseo-provider-dsh)
 
 ## published
+- Push auth: `git config --global credential.helper osxkeychain`, so no token is
+  needed for future pushes from this machine.
 - GitHub: https://github.com/shineshen007/paseo-provider-dsh (public, branch `main`)
 - Commit `feat: native Paseo provider for DeepSeek Harness` — 51 files, 1.11 MB.
 - Verified after publish: anonymous clone works, fresh clone installs and passes
