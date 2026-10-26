@@ -3,6 +3,12 @@
 updated_at: 2026-10-26
 current_goal: deliver a native Paseo provider plugin for DeepSeek Harness (paseo-provider-dsh)
 
+## published
+- GitHub: https://github.com/shineshen007/paseo-provider-dsh (public, branch `main`)
+- Commit `feat: native Paseo provider for DeepSeek Harness` — 51 files, 1.11 MB.
+- Verified after publish: anonymous clone works, fresh clone installs and passes
+  typecheck + 34 contract tests.
+
 ## completed
 - API feasibility验证 (`docs/FINDINGS.md`), all 10 P0 probes measured against installed DSH + Paseo.
 - Two-package implementation: Paseo provider (`server/`, `index.server.ts`) + DSH bridge (`dsh-bridge/`).
